@@ -1,6 +1,8 @@
 from app import app
 from flask import jsonify, abort, make_response, request
 from flask_httpauth import HTTPBasicAuth
+import postgresql
+import json
 
 auth = HTTPBasicAuth()
 tasks = [
@@ -17,6 +19,40 @@ tasks = [
         'done': False
     }
 ]
+def db_conn():
+    return postgresql.open('pq://postgres@localhost')
+
+def to_json(data):
+    return json.dumps(data) + "\n"
+
+def resp(code, data):
+    return flask.Response(
+        status=code,
+        mimetype="application/json",
+        response=to_json(data)
+    )
+
+def todo_validate():
+    errors = []
+    json = flask.request.get_json()
+    if json is None:
+        errors.append(
+            "No JSON sent. "
+        )
+        return (None, errors)
+
+    for field_name in ['title']:
+        if type(json.get(field_name)) is not str:
+            errors.append(
+                "Field '{}' is missing or not a string".format(field_name)
+            )
+    return (json, errors)
+
+def affected_num_to_code(cnt):
+    code = 200
+    if cnt == 0:
+        code = 404
+    return code
 
 @auth.get_password
 def get_password(username):
@@ -29,9 +65,14 @@ def unauthorized():
     return make_response(jsonify({'error': 'Unauthorized acces'}), 403)
 
 @app.route('/api', methods=['GET'])
-@auth.login_required
+# @auth.login_required
 def get_tasks():
-    return jsonify({'tasks': tasks})
+    with db_conn() as db:
+        tuples = db.query("SELECT id, title, description, done FROM todo")
+        todo = []
+        for (id, title, description, done) in tuples:
+            todo.append({"id": id, "title": title, "description": description, "done": done})
+    return jsonify({'tasks': todo})
 
 @app.route('/api/<int:task_id>', methods=['GET'])
 def det_task(task_id):
@@ -47,16 +88,16 @@ def not_found(error):
 
 @app.route('/api', methods=['POST'])
 def create_task():
+    
     if not request.json or not 'title' in request.json:
         abort(400)
-    task = {
-        'id': tasks[-1]['id'] + 1,
-        'title': request.json['title'],
-        'description': request.json.get('description', ""),
-        'done': False
-    }
-    tasks.append(task)
-    return jsonify({'task': task}), 201
+    with db_conn() as db:
+        insert = db.prepare(
+            "INSERT INTO todo (title, description, done) VALUES ($1, $2, $3) " + "RETURNING id")
+        [(todo_id,)] = insert(json['title'], json['description'], json['done'])
+        
+   
+    return jsonify({'task': todo_id}), 201
 
 @app.route('/api/<int:task_id>', methods=['PUT'])
 def update_task(task_id):
